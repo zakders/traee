@@ -25,6 +25,7 @@ jobs:
           TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
           TRAE_MACHINE_ID: ${{ secrets.TRAE_MACHINE_ID }}
           QYWX_TOKEN: ${{ secrets.QYWX_TOKEN }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
         run: python script/trae_checkin.py
 
       - name: credit monitor
