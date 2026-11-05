@@ -63,6 +63,7 @@ Trae SOLO 每日签到（GitHub Actions 定时任务）。
 
 ## 其他已知事项
 
+- ⚠️ **Actions Cache 有过期策略**：缓存连续约 7 天未被访问会被 GitHub 自动清理。每天正常跑会一直续期；但如果工作流停跑或被禁用超过一周，缓存丢失后下一轮会回退到 Secrets 里的旧 token，可能再次报 `20101`。此时按上面「以后 token 又失效了怎么办」重新提取一次即可。彻底消除这个隐患需要把轮换后的 token 回写进 Secrets（需额外 PAT 与 `secrets` 写权限），当前未做。
 - 签到脚本通过 `actions/checkout` 从第三方 `L0NE-6/Trae-AutoCheckin` 动态拉取，**未锁定 commit SHA**。上游改名、删库或改动都可能导致本工作流失效。建议后续固定到某个 SHA 或把脚本 vendor 进本仓库。
 - 运行日志里的 `Node.js 20 is deprecated`（checkout / cache 动作）与 `ubuntu-latest` 迁移提示是上游动作的兼容性提示，不影响当前运行。
 - 本仓库为 public，但缓存中的凭据已用 `TRAE_CACHE_KEY` 加密，明文状态文件从不提交。
