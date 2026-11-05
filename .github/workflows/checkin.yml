@@ -29,10 +29,14 @@ jobs:
           echo "::error::缺少 TRAE_CACHE_KEY，无法持久化轮换 token。请添加一个随机长字符串 Secret。"
           exit 1
 
+      # 固定到已验证通过的 commit，避免上游 main 变动导致行为漂移或工作流失效。
+      # 锁定版本：d289f0d7c2a232936235df96bbffbbeaefcfc771 (2026-11-03, v1.0.9)
+      # 升级时先在新 SHA 上手动跑一次 workflow_dispatch 验证，再改这里的 ref。
       - name: fetch scripts
         uses: actions/checkout@v4
         with:
           repository: L0NE-6/Trae-AutoCheckin
+          ref: d289f0d7c2a232936235df96bbffbbeaefcfc771
           path: script
           persist-credentials: false
 
