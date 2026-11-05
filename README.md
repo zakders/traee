@@ -11,6 +11,7 @@ Trae SOLO 每日签到（GitHub Actions 定时任务）。
 | :--- | :--- | :--- |
 | 首次 | `✅ 成功 1 / 已签 0 / 失败 0` | 缓存未命中，签到成功并写入加密状态 |
 | 第二次 | `✅ 成功 0 / 已签 1 / 失败 0` | `Cache restored successfully`，解密还原成功，当日已签正确跳过 |
+| 锁定上游 SHA 后 | `✅ 成功 0 / 已签 1 / 失败 0` | `HEAD is now at d289f0d`，固定版本拉取 + 缓存恢复正常 |
 
 ## 曾出过的问题与修复
 
@@ -64,6 +65,8 @@ Trae SOLO 每日签到（GitHub Actions 定时任务）。
 ## 其他已知事项
 
 - ⚠️ **Actions Cache 有过期策略**：缓存连续约 7 天未被访问会被 GitHub 自动清理。每天正常跑会一直续期；但如果工作流停跑或被禁用超过一周，缓存丢失后下一轮会回退到 Secrets 里的旧 token，可能再次报 `20101`。此时按上面「以后 token 又失效了怎么办」重新提取一次即可。彻底消除这个隐患需要把轮换后的 token 回写进 Secrets（需额外 PAT 与 `secrets` 写权限），当前未做。
-- 签到脚本通过 `actions/checkout` 从第三方 `L0NE-6/Trae-AutoCheckin` 动态拉取，**未锁定 commit SHA**。上游改名、删库或改动都可能导致本工作流失效。建议后续固定到某个 SHA 或把脚本 vendor 进本仓库。
+- ✅ **上游脚本已锁定**：`L0NE-6/Trae-AutoCheckin@d289f0d7c2a232936235df96bbffbbeaefcfc771`（2026-11-03，v1.0.9），在 `.github/workflows/checkin.yml` 的 `fetch scripts` 步骤用 `ref:` 固定。上游 `main` 后续改动不会再影响本仓库。
+  - 升级方式：先在新 SHA 上手动跑一次 `workflow_dispatch` 验证签到统计正常，再改 `ref`；不要直接跟 `main`。
+  - ⚠️ 锁 SHA 挡不住上游**删库 / 改名**（仓库消失时 checkout 会直接失败）。要彻底摆脱外部依赖，需把 `trae_checkin.py` / `trae_credit_monitor.py` vendor 进本仓库并改为直接运行。
 - 运行日志里的 `Node.js 20 is deprecated`（checkout / cache 动作）与 `ubuntu-latest` 迁移提示是上游动作的兼容性提示，不影响当前运行。
 - 本仓库为 public，但缓存中的凭据已用 `TRAE_CACHE_KEY` 加密，明文状态文件从不提交。
