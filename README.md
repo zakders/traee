@@ -2,31 +2,67 @@
 
 Trae SOLO 每日签到（GitHub Actions 定时任务）。
 
-## 当前状态：⚠️ 已停用
+## 当前状态：✅ 运行中
 
-`Trae Daily Checkin` 工作流目前为 `disabled_manually`，**不会执行签到**。
+`Trae Daily Checkin` 工作流已启用，每天 UTC 01:30（北京时间 09:30）执行。
+2026-11-05 手动触发两次验证均 `success`：
 
-原因：`TRAE_REFRESH_TOKEN` 已失效，接口返回
+| 运行 | 结果 | 说明 |
+| :--- | :--- | :--- |
+| 首次 | `✅ 成功 1 / 已签 0 / 失败 0` | 缓存未命中，签到成功并写入加密状态 |
+| 第二次 | `✅ 成功 0 / 已签 1 / 失败 0` | `Cache restored successfully`，解密还原成功，当日已签正确跳过 |
+
+## 曾出过的问题与修复
+
+**症状**：2026-11-03 起连续 3 天失败，报
 `refresh http=401 code=20101 refresh token is invalid`。
-2026-11-03 起连续失败；此前的 11-02 及更早均成功。
 
-注意：脚本在 token 失效时仍以 exit 0 结束，日志显示「✅ 成功 0 / ❌ 失败 1」，
-步骤看起来是绿的，但实际没有签到成功。判断真实结果要看这段统计，不要只看步骤状态。
+**根因**：Trae 的 `refreshToken` 每次续期都会**轮换**，旧的立即作废（上游对 `20101` 的定义就是「已失效或被轮换掉」）。GitHub Actions 每次都是全新容器，而旧版工作流只从 Secrets 读取、没有回写，轮换后的新 token 随容器一起丢弃，第二天仍拿旧值去换 → 全线失效。
 
-## 恢复步骤
+**修复**：
 
-1. 重新登录 Trae，获取新的 refresh token（以及配套的 DEVICE_ID / MACHINE_ID / KEY_PEM / PUB_PEM）。
-2. 在本仓库 Settings → Secrets and variables → Actions 中更新对应 secrets。
-   - 若需要企业微信推送，还需补上 `QYWX_TOKEN`（当前 workflow 引用了它，但 secret 未配置，值为空）。
-   - `PUSHPLUS_TOKEN` 已配置，PushPlus 推送正常。
-3. 手动触发一次 `workflow_dispatch` 验证，确认日志里「✅ 成功 1」。
-4. 重新启用定时任务：
+1. 从本机 Trae CN 客户端重新提取凭据，更新 `TRAE_REFRESH_TOKEN` 与 4 个设备变量。
+2. 新增 `TRAE_CACHE_KEY` Secret（随机长串），工作流用 `actions/cache` + `openssl aes-256-cbc` 持久化轮换状态：恢复并解密 → 签到 → 加密并保存。缓存内容始终是**加密后**的 `state.enc`，明文不入库、不提交。
+3. 新增 `Verify checkin result` 步骤。签到脚本在 token 失效时仍以 **exit 0** 结束，日志是「✅ 成功 0 / ❌ 失败 1」但步骤显示绿色——旧版就是这样静默失败了好几天。现在按统计行判断，成功 + 已签为 0 就直接让工作流失败。
+
+> ⚠️ 状态文件由脚本写在**脚本所在目录** `script/` 下（`HERE = dirname(__file__)`），
+> 不是仓库根目录。打包/还原缓存时必须保留 `script/` 前缀，直接照抄上游 `daily.yml` 会漏掉它们。
+
+## Secrets 清单
+
+| 变量 | 说明 |
+| :--- | :--- |
+| `TRAE_REFRESH_TOKEN` | 登录凭据，形如 `xxx=.18dxxx`；**不是** `eyJ` 开头的 accessToken |
+| `TRAE_DEVICE_KEY_PEM` / `TRAE_DEVICE_PUB_PEM` | 设备 ECDSA 密钥对，续期签名必需 |
+| `TRAE_DEVICE_ID` / `TRAE_MACHINE_ID` | 客户端真实设备号 |
+| `TRAE_CACHE_KEY` | 加密轮换缓存的随机密钥，**不要删、不要改**（改了旧缓存无法解密，但下一轮会自动重建） |
+| `PUSHPLUS_TOKEN` | PushPlus 推送，已配置 |
+| `QYWX_TOKEN` | ⚠️ 工作流引用了但未配置，值为空。需要企业微信推送才补，否则忽略 |
+
+设备密钥必须与 token 从**同一台机器、同一次登录**导出，混用会报 `10101` / `20403`。
+
+## 以后 token 又失效了怎么办
+
+1. 打开 Trae CN 客户端，退出登录并重新登录一次。
+2. 提取新凭据（脚本零依赖、纯本地、不联网）：
+   ```bash
+   python trae_get_token.py                 # TRAE_REFRESH_TOKEN
+   python trae_get_token.py --export-keys   # 4 个设备变量
    ```
-   gh workflow enable checkin.yml -R zakders/traee
+   脚本地址：<https://github.com/L0NE-6/Trae-AutoCheckin/blob/main/trae_get_token.py>
+3. 更新上表前 5 个 Secrets（网页 Settings → Secrets and variables → Actions，或 `gh secret set NAME -R zakders/traee`）。
+4. 手动跑一次确认统计行是「✅ 成功 1」或「☑️ 已签 1」：
+   ```bash
+   gh workflow run checkin.yml -R zakders/traee
+   gh run watch --exit-status
    ```
+   **不要只看步骤是否绿色**，看 `Verify checkin result` 输出的统计。
 
-## 其他已知风险
+> 同一个账号只在一处刷新（青龙 / 本地 / Actions 三选一），并发刷新会互相把 token 顶失效。
+> 工作流已用 `concurrency` 组避免自身并发。
 
-- 签到脚本通过 `actions/checkout` 从第三方仓库 `L0NE-6/Trae-AutoCheckin` 动态拉取，
-  未锁定 commit SHA。上游改名、删库或改动都可能导致本工作流失效。
-  建议后续改为固定 commit SHA 或将脚本 vendor 进本仓库。
+## 其他已知事项
+
+- 签到脚本通过 `actions/checkout` 从第三方 `L0NE-6/Trae-AutoCheckin` 动态拉取，**未锁定 commit SHA**。上游改名、删库或改动都可能导致本工作流失效。建议后续固定到某个 SHA 或把脚本 vendor 进本仓库。
+- 运行日志里的 `Node.js 20 is deprecated`（checkout / cache 动作）与 `ubuntu-latest` 迁移提示是上游动作的兼容性提示，不影响当前运行。
+- 本仓库为 public，但缓存中的凭据已用 `TRAE_CACHE_KEY` 加密，明文状态文件从不提交。
