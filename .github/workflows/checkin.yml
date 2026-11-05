@@ -6,10 +6,29 @@ on:
     - cron: '30 1 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: trae-daily-checkin
+  cancel-in-progress: false
+
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TRAE_CACHE_KEY: ${{ secrets.TRAE_CACHE_KEY }}
     steps:
+      # Trae 每次续期都会轮换 refreshToken，旧 token 立即作废。
+      # Actions 每次都是全新环境，必须把轮换后的 token 缓存持久化，
+      # 否则第二天仍拿 Secrets 里的旧值去换，报 20101。
+      - name: Check cache encryption key
+        if: ${{ env.TRAE_CACHE_KEY == '' }}
+        run: |
+          echo "::error::缺少 TRAE_CACHE_KEY，无法持久化轮换 token。请添加一个随机长字符串 Secret。"
+          exit 1
+
       - name: fetch scripts
         uses: actions/checkout@v4
         with:
@@ -17,7 +36,24 @@ jobs:
           path: script
           persist-credentials: false
 
+      - name: Restore encrypted state
+        uses: actions/cache/restore@v4
+        with:
+          path: .trae-cache/state.enc
+          key: trae-state-v1-${{ github.run_id }}
+          restore-keys: |
+            trae-state-v1-
+
+      - name: Decrypt state
+        if: ${{ hashFiles('.trae-cache/state.enc') != '' }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass env:TRAE_CACHE_KEY \
+            -in .trae-cache/state.enc -out "$RUNNER_TEMP/trae-state.tar"
+          tar -xf "$RUNNER_TEMP/trae-state.tar" -C .
+          rm -f "$RUNNER_TEMP/trae-state.tar"
+
       - name: run checkin
+        shell: bash
         env:
           TRAE_REFRESH_TOKEN: ${{ secrets.TRAE_REFRESH_TOKEN }}
           TRAE_DEVICE_KEY_PEM: ${{ secrets.TRAE_DEVICE_KEY_PEM }}
@@ -26,7 +62,9 @@ jobs:
           TRAE_MACHINE_ID: ${{ secrets.TRAE_MACHINE_ID }}
           QYWX_TOKEN: ${{ secrets.QYWX_TOKEN }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: python script/trae_checkin.py
+        run: |
+          set -o pipefail
+          python script/trae_checkin.py 2>&1 | tee "$RUNNER_TEMP/checkin.log"
 
       - name: credit monitor
         if: always()
@@ -36,3 +74,56 @@ jobs:
           TRAE_DEVICE_PUB_PEM: ${{ secrets.TRAE_DEVICE_PUB_PEM }}
           TRAE_DEVICE_ID: ${{ secrets.TRAE_DEVICE_ID }}
         run: python script/trae_credit_monitor.py
+
+      # trae_checkin.py 在 token 失效时仍以 exit 0 结束，步骤显示绿色但「成功 0」。
+      # 这里按统计行兜底，避免静默失败被当成正常。
+      - name: Verify checkin result
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, re, pathlib, sys
+          log = pathlib.Path(os.environ['RUNNER_TEMP']) / 'checkin.log'
+          if not log.exists():
+              print('::warning::未找到签到日志，跳过结果校验')
+              sys.exit(0)
+          text = log.read_text(encoding='utf-8', errors='replace')
+          m = re.search(r'成功\s*(\d+).*?已签\s*(\d+).*?失败\s*(\d+)', text)
+          if not m:
+              print('::warning::无法解析签到统计行，请人工确认日志末尾：')
+              print(text[-1200:])
+              sys.exit(0)
+          ok, done, bad = map(int, m.groups())
+          print('签到统计 -> 成功 %d / 已签 %d / 失败 %d' % (ok, done, bad))
+          if bad:
+              print('::warning::有 %d 个账号失败，请查看完整日志' % bad)
+          if ok + done == 0:
+              print('::error::实际没有任何账号签到成功，可能是 refreshToken 失效或被轮换掉')
+              sys.exit(1)
+          PY
+
+      # 状态文件写在脚本所在目录 script/ 下（HERE = dirname(__file__)），
+      # 打包时保留 script/ 前缀，解密后才能还原到正确位置。
+      - name: Encrypt state
+        if: ${{ always() && env.TRAE_CACHE_KEY != '' }}
+        run: |
+          mkdir -p .trae-cache
+          files=""
+          for f in script/.trae_token_cache.json script/.trae_device_ids.json script/.trae_checkin_state.json; do
+            if [ -f "$f" ]; then files="$files $f"; fi
+          done
+          if [ -n "$files" ]; then
+            tar -cf "$RUNNER_TEMP/trae-state.tar" $files
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:TRAE_CACHE_KEY \
+              -in "$RUNNER_TEMP/trae-state.tar" -out .trae-cache/state.enc
+            rm -f "$RUNNER_TEMP/trae-state.tar"
+          else
+            echo "本轮没有生成状态文件，跳过缓存写入"
+          fi
+
+      - name: Save encrypted state
+        if: ${{ always() && env.TRAE_CACHE_KEY != '' && hashFiles('.trae-cache/state.enc') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .trae-cache/state.enc
+          key: trae-state-v1-${{ github.run_id }}
